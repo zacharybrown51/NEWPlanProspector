@@ -237,7 +237,7 @@ dl.innerHTML='<div class="dtl-hdr"><div><div style="font-size:14px;font-weight:6
 +'<div class="dtl-sec"><div class="dtl-st">ALL SERVICE PROVIDERS</div>'+pvt+'</div>'
 +'<div class="dtl-sec"><div class="dtl-st">LOCATION</div><div style="font-size:12px">'+H(p[16])+', '+H(p[2])+', CA '+H(p[3])+'</div><div style="font-size:11px;color:var(--tx3);margin-top:2px">EIN: '+H(p[14])+'</div></div>'
 +'<div class="dtl-sec"><div class="dtl-st">FILING</div><a href="'+H(p[13])+'" target="_blank" class="link-a">VIEW 5500 FILING &rarr;</a><span style="font-size:10px;color:var(--tx3);margin-left:8px">'+H(p[15])+'</span></div>'
-+'<div class="dtl-sec"><div class="dtl-st">INVESTMENT LINEUP</div><div id="inv-container"><button class="inv-btn" id="inv-extract">&#128200; EXTRACT LINEUP FROM 5500 PDF</button><div class="inv-note">Parses the Schedule of Assets from the filing. May take a few seconds.</div></div></div>'
++'<div class="dtl-sec"><div class="dtl-st">INVESTMENT LINEUP</div><div id="inv-container">'+(p[7]>=100?'<label class="inv-btn" style="display:block;text-align:center;cursor:pointer">&#128193; UPLOAD 5500 PDF TO PARSE LINEUP<input type="file" accept=\".pdf\" style="display:none" id="inv-file"></label><div class="inv-note">Download the <a href="'+H(p[13])+'" target="_blank" class="link-a">5500 PDF filing</a>, then upload it here to extract fund data into a downloadable spreadsheet.</div>':'<div class="inv-note" style="color:var(--tx3)">&#128221; Investment lineup data not available &mdash; plans with fewer than 100 participants file Form 5500-SF which does not include a Schedule of Assets.</div>')+'</div></div>'
 +'<div class="dtl-sec"><div class="dtl-st">OUTREACH NOTES</div><textarea class="notes" id="dn" placeholder="Contact info, next steps...">'+H(sv)+'</textarea></div>'
 +'<button class="snap-btn" id="sg">&#9654; GENERATE PLAN SNAPSHOT</button></div>';
 document.getElementById('dc').addEventListener('click',cD);
@@ -274,53 +274,75 @@ function exCSV(){doExport(fd)}
 function exSel(){var s=[];for(var i=0;i<fd.length;i++){if(checked[i])s.push(fd[i])}if(!s.length){alert('No plans selected. Use checkboxes to select plans.');return}doExport(s)}
 function doExport(data){var h='Score,Plan Name,Sponsor,City,Zip,Assets,Assets BOY,Growth %,Participants,Assets/Part,Plan Type,Union,Signals,EIN,Recordkeeper,TPA,Advisor,Plan Features,Filed,Address,Link'+String.fromCharCode(10);var rows=[];for(var i=0;i<data.length;i++){var p=data[i];var sigs=p[11]?p[11].split(',').map(function(s){return SIG[s]||s}).join('; '):'';rows.push([p[12],'"'+p[0].replace(/"/g,'""')+'"','"'+p[1].replace(/"/g,'""')+'"','"'+p[2]+'"',p[3],p[4],p[5],p[6],p[7],p[23]||'','"'+p[9]+'"',p[10]?'Yes':'No','"'+sigs+'"',p[14],'"'+p[18].replace(/"/g,'""')+'"','"'+p[19].replace(/"/g,'""')+'"','"'+p[20].replace(/"/g,'""')+'"','"'+(p[22]||'').replace(/["|]/g,' ')+'"',p[15],'"'+p[16].replace(/"/g,'""')+'"',p[13]].join(','))}var b=new Blob([h+rows.join(String.fromCharCode(10))],{type:'text/csv'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='sd_401k_'+(data.length<fd.length?'selected_':'')+new Date().toISOString().slice(0,10)+'.csv';a.click()}
 
-function extractInv(url){
+
+function parseUploadedPDF(file,plan){
 var c=document.getElementById('inv-container');
-c.innerHTML='<div class="inv-loading">&#9203; Fetching and parsing PDF...</div>';
-if(typeof pdfjsLib==='undefined'){c.innerHTML='<div class="inv-error">PDF.js not loaded. Refresh page.</div>';return}
+c.innerHTML='<div class="inv-loading">&#9203; Parsing PDF... this may take a moment for large filings.</div>';
+if(typeof pdfjsLib==='undefined'){c.innerHTML='<div class="inv-error">PDF.js not loaded. Try refreshing.</div>';return}
 pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-pdfjsLib.getDocument(url).promise.then(function(pdf){
+var reader=new FileReader();
+reader.onload=function(){
+var arr=new Uint8Array(reader.result);
+pdfjsLib.getDocument({data:arr}).promise.then(function(pdf){
 var promises=[];
 for(var i=1;i<=pdf.numPages;i++){
 (function(pg){promises.push(pdf.getPage(pg).then(function(page){return page.getTextContent().then(function(tc){return tc.items.map(function(it){return it.str}).join(' ')})}))})(i)}
 Promise.all(promises).then(function(pages){
-var txt=pages.join('\n');
-var funds=[];var seen={};
-// Pattern 1: Fund names with common keywords
-var p1=/([A-Z][A-Za-z0-9\s\.&,\/\-\(\)]+(?:FUND|INDEX|TARGET|GROWTH|BOND|INCOME|VALUE|EQUITY|STOCK|BALANCED|STABLE|MONEY MARKET|RETIREMENT|TRUST|CIT|PORTFOLIO|ALLOCATION|INTL|INTERNATIONAL|SMALL CAP|MID CAP|LARGE CAP|S&P|RUSSELL|NASDAQ|AGGREGATE|FIXED))[^A-Za-z]*(\$?\s*[\d,]+\.?\d*)?/gi;
-var m;while((m=p1.exec(txt))!==null){
-var nm=m[1].trim().replace(/\s+/g,' ');
-if(nm.length>8&&nm.length<120&&!seen[nm.toUpperCase()]){
-seen[nm.toUpperCase()]=true;
-var vl=m[2]?parseFloat(m[2].replace(/[$,\s]/g,'')):0;
-funds.push({n:nm,v:vl})}}
-// Pattern 2: Target date funds
+var txt=pages.join('\n');var funds=[];var seen={};
+var p1=/([A-Z][A-Za-z0-9\s\.&,\/\-\(\)]+(?:FUND|INDEX|TARGET|GROWTH|BOND|INCOME|VALUE|EQUITY|STOCK|BALANCED|STABLE|MONEY MARKET|RETIREMENT|TRUST|CIT|PORTFOLIO|ALLOCATION|INTL|INTERNATIONAL|SMALL CAP|MID CAP|LARGE CAP|S&P|RUSSELL|AGGREGATE|FIXED|CORE|BLEND))[^A-Za-z]*(\$?\s*[\d,]+\.?\d*)?/gi;
+var mt;while((mt=p1.exec(txt))!==null){var nm=mt[1].trim().replace(/\s+/g,' ');if(nm.length>8&&nm.length<120&&!seen[nm.toUpperCase()]){seen[nm.toUpperCase()]=true;var vl=mt[2]?parseFloat(mt[2].replace(/[$,\s]/g,'')):0;funds.push({n:nm,v:vl})}}
 var p2=/((?:FREEDOM|LIFETIME|TARGET|VANGUARD TARGET|FIDELITY|JPMORGAN|PRINCIPAL|AMERICAN|BLACKROCK|SCHWAB|T\.?\s*ROWE)[A-Za-z0-9\s\.\-]*(?:20[2-7]\d|INCOME|RETIREMENT))/gi;
-while((m=p2.exec(txt))!==null){
-var nm2=m[1].trim().replace(/\s+/g,' ');
-if(nm2.length>6&&!seen[nm2.toUpperCase()]){seen[nm2.toUpperCase()]=true;funds.push({n:nm2,v:0})}}
+while((mt=p2.exec(txt))!==null){var nm2=mt[1].trim().replace(/\s+/g,' ');if(nm2.length>6&&!seen[nm2.toUpperCase()]){seen[nm2.toUpperCase()]=true;funds.push({n:nm2,v:0})}}
 funds.sort(function(a,b){return b.v-a.v||a.n.localeCompare(b.n)});
-// Detect signals
 var late=(/late\s*(remit|contribut|transmit|deposit)/i).test(txt);
 var empSec=(/employer\s*(securit|stock)/i).test(txt);
 var html='';
 if(funds.length>0){
-html+='<div style="margin-bottom:6px;font-size:10px;color:var(--tx2)">'+funds.length+' investment options detected</div>';
 var tdc=0;
+html+='<div style="margin-bottom:8px;font-size:11px;color:var(--txh);font-weight:600">'+funds.length+' investment options found</div>';
 for(var j=0;j<Math.min(funds.length,25);j++){
 if(/20[2-7]\d|target|freedom|lifetime/i.test(funds[j].n))tdc++;
 html+='<div class="inv-fund"><span class="inv-fund-name">'+H(funds[j].n)+'</span>';
 if(funds[j].v>1000)html+='<span class="inv-fund-val">'+FM.usd(funds[j].v)+'</span>';
 html+='</div>'}
-if(funds.length>25)html+='<div style="color:var(--tx3);font-size:9px;padding-top:4px">+'+(funds.length-25)+' more</div>';
-if(tdc>0)html+='<div class="inv-note" style="color:var(--teal2)">&#9989; '+tdc+' target-date fund(s) detected</div>';
-}else{html='<div class="inv-note">No fund lineup found in PDF text. May be scanned/image-based.</div>'}
-if(late)html+='<div class="inv-note" style="color:var(--coral)">&#9888; Late contribution language detected</div>';
-if(empSec)html+='<div class="inv-note" style="color:var(--coral)">&#9888; Employer securities referenced</div>';
-html+='<div class="inv-note">Parsed '+pdf.numPages+' pages &middot; <a href="'+url+'" target="_blank" class="link-a">View full PDF</a></div>';
-c.innerHTML=html})
-}).catch(function(e){
-c.innerHTML='<div class="inv-error">Could not load PDF. CORS may block cross-origin access.</div><div class="inv-note"><a href="'+url+'" target="_blank" class="link-a">Open PDF manually</a> to review investment lineup.</div>'})}
+if(funds.length>25)html+='<div style="color:var(--tx3);font-size:9px;padding-top:4px">+'+(funds.length-25)+' more in export</div>';
+if(tdc>0)html+='<div class="inv-note" style="color:var(--teal2)">&#9989; '+tdc+' target-date fund(s)</div>';
+html+='<button class="inv-btn" style="margin-top:10px;border-style:solid" id="inv-export">&#128190; EXPORT TO SPREADSHEET</button>';
+}else{html='<div class="inv-note">No fund lineup found in PDF text. The Schedule of Assets may be image-based or in a non-standard format.</div>'}
+if(late)html+='<div class="inv-note" style="color:var(--coral)">&#9888; Late contribution language detected in filing</div>';
+if(empSec)html+='<div class="inv-note" style="color:var(--coral)">&#9888; Employer securities referenced in filing</div>';
+html+='<div class="inv-note">Parsed '+pdf.numPages+' pages</div>';
+html+='<div style="margin-top:8px"><label class="inv-btn" style="display:inline-block;text-align:center;cursor:pointer;width:auto;border-style:dashed">&#128193; UPLOAD DIFFERENT PDF<input type="file" accept=".pdf" style="display:none" id="inv-file2"></label></div>';
+c.innerHTML=html;
+if(document.getElementById('inv-export')){
+document.getElementById('inv-export').addEventListener('click',function(){exportInvCSV(funds,plan,late,empSec)})}
+if(document.getElementById('inv-file2')){
+document.getElementById('inv-file2').addEventListener('change',function(e2){var f2=e2.target.files[0];if(f2)parseUploadedPDF(f2,plan)})}
+})}).catch(function(e){c.innerHTML='<div class="inv-error">Error parsing PDF: '+H(String(e))+'</div>'})};
+reader.readAsArrayBuffer(file)}
+
+function exportInvCSV(funds,plan,late,empSec){
+var h='Fund Name,Market Value,Is Target Date'+String.fromCharCode(10);
+var rows=[];
+for(var i=0;i<funds.length;i++){
+var isTD=(/20[2-7]\d|target|freedom|lifetime/i).test(funds[i].n)?'Yes':'No';
+rows.push('"'+funds[i].n.replace(/"/g,'""')+'",'+funds[i].v+','+isTD)}
+var summary=String.fromCharCode(10)+String.fromCharCode(10)+'Plan Summary'+String.fromCharCode(10);
+summary+='Plan Name,"'+plan[0].replace(/"/g,'""')+'"'+String.fromCharCode(10);
+summary+='Sponsor,"'+plan[1].replace(/"/g,'""')+'"'+String.fromCharCode(10);
+summary+='EIN,'+plan[14]+String.fromCharCode(10);
+summary+='Assets,'+plan[4]+String.fromCharCode(10);
+summary+='Participants,'+plan[7]+String.fromCharCode(10);
+summary+='RK,"'+(plan[18]||'Unknown').replace(/"/g,'""')+'"'+String.fromCharCode(10);
+summary+='TPA,"'+(plan[19]||'Unknown').replace(/"/g,'""')+'"'+String.fromCharCode(10);
+summary+='Total Funds,'+funds.length+String.fromCharCode(10);
+summary+='Target Date Funds,'+funds.filter(function(f){return(/20[2-7]\d|target|freedom|lifetime/i).test(f.n)}).length+String.fromCharCode(10);
+if(late)summary+='Late Contributions,Detected'+String.fromCharCode(10);
+if(empSec)summary+='Employer Securities,Referenced'+String.fromCharCode(10);
+var blob=new Blob([h+rows.join(String.fromCharCode(10))+summary],{type:'text/csv'});
+var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+a.download=plan[1].replace(/[^a-zA-Z0-9]/g,'_').substring(0,30)+'_investment_lineup.csv';a.click()}
+
 
 rDash();
 </script>
